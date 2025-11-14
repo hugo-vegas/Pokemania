@@ -1,0 +1,118 @@
+from flask import Flask, request, jsonify
+import requests
+import random
+
+app = Flask(__name__)
+
+regions = {
+    'Kanto': (1, 151),
+    'Johto': (152, 251),
+    'Hoenn': (252, 386),
+    'Sinnoh': (387, 493),
+    'Unova': (494, 649),
+    'Kalos': (650, 721),
+    'Alola': (722, 809),
+    'Galar': (810, 905),
+    'Paldea': (906, 1025),
+    'General': (1, 1025)
+}
+
+pokemon_cache = {}
+
+def fetch_pokemon(num):
+    if num in pokemon_cache:
+        return pokemon_cache[num]
+    url = f"https://pokeapi.co/api/v2/pokemon/{num}"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        name = data['name'].capitalize()
+        types = [t['type']['name'].capitalize() for t in data['types']]
+        image_url = data['sprites']['front_default']
+        pokemon = {'number': num, 'name': name, 'types': types, 'image_url': image_url}
+        pokemon_cache[num] = pokemon
+        return pokemon
+    return None
+
+@app.route('/regions', methods=['GET'])
+def get_regions():
+    return jsonify(list(regions.keys()))
+
+@app.route('/question', methods=['POST'])
+def get_question():
+    data = request.json
+    region = data.get('region')
+    difficulty = data.get('difficulty')
+
+    if region not in regions:
+        return jsonify({'error': 'Invalid region'}), 400
+
+    if difficulty not in ['easy', 'medium', 'hard', 'expert']:
+        return jsonify({'error': 'Invalid difficulty'}), 400
+
+    if difficulty == 'expert' and region != 'General':
+        return jsonify({'error': 'Expert difficulty only available in General'}), 400
+
+    min_num, max_num = regions[region]
+    num = random.randint(min_num, max_num)
+    pokemon = fetch_pokemon(num)
+    if not pokemon:
+        return jsonify({'error': 'Failed to fetch Pokémon data'}), 500
+
+    return jsonify({'pokemon_id': num, 'image_url': pokemon['image_url']})
+
+@app.route('/answer', methods=['POST'])
+def check_answer():
+    data = request.json
+    pokemon_id = data.get('pokemon_id')
+    user_answer = data.get('answer')
+    difficulty = data.get('difficulty')
+
+    if difficulty not in ['easy', 'medium', 'hard', 'expert']:
+        return jsonify({'error': 'Invalid difficulty'}), 400
+
+    pokemon = fetch_pokemon(pokemon_id)
+    if not pokemon:
+        return jsonify({'error': 'Invalid Pokémon ID'}), 400
+
+    correct = False
+    feedback = ''
+
+    if difficulty == 'easy':
+        correct = user_answer.strip().lower() == pokemon['name'].lower()
+        feedback = f"The correct name is {pokemon['name']}"
+
+    elif difficulty == 'medium':
+        user_types = sorted([t.strip().capitalize() for t in user_answer.split(',')])
+        correct_types = sorted(pokemon['types'])
+        correct = user_types == correct_types
+        feedback = f"The correct types are {', '.join(correct_types)}"
+
+    elif difficulty == 'hard':
+        try:
+            correct = int(user_answer) == pokemon['number']
+            feedback = f"The correct Pokédex number is {pokemon['number']}"
+        except ValueError:
+            correct = False
+
+    elif difficulty == 'expert':
+        parts = [p.strip() for p in user_answer.split(',')]
+        if len(parts) != 3:
+            correct = False
+        else:
+            num_str, type_str, name = parts
+            try:
+                num_correct = int(num_str) == pokemon['number']
+            except ValueError:
+                num_correct = False
+            name_correct = name.lower() == pokemon['name'].lower()
+            user_types = sorted([t.capitalize() for t in type_str.split('/')])  # assuming / or , for types
+            correct_types = sorted(pokemon['types'])
+            type_correct = user_types == correct_types
+            correct = num_correct and type_correct and name_correct
+        feedback = f"Correct: number {pokemon['number']}, types {', '.join(pokemon['types'])}, name {pokemon['name']}"
+
+    return jsonify({'correct': correct, 'feedback': feedback, 'pokemon': pokemon})
+
+if __name__ == '__main__':
+    app.run(debug=True)
